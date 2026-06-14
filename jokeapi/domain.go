@@ -28,15 +28,11 @@ func (Domain) Info() kit.DomainInfo {
 		Hosts:  []string{Host},
 		Identity: kit.Identity{
 			Binary: "jokeapi",
-			Short:  "Fetch categorized jokes from JokeAPI v2.",
-			Long: `jokeapi fetches jokes from the free JokeAPI v2 service (v2.jokeapi.dev).
-No authentication required.
+			Short:  "Fetch jokes from the Official Joke API.",
+			Long: `jokeapi fetches jokes from the free Official Joke API
+(official-joke-api.appspot.com). No authentication required.
 
-Categories: Any, Misc, Programming, Dark, Pun, Spooky, Christmas.
-Joke types: single (one text field) or twopart (setup + delivery).
-
-Use --safe to restrict to family-safe jokes, --blacklist to exclude
-jokes with specific flags (nsfw, religious, political, racist, sexist, explicit).`,
+Available types: general, programming, knock-knock, dark, pun, spooky, christmas.`,
 			Site: Host,
 			Repo: "https://github.com/tamnd/jokeapi-cli",
 		},
@@ -48,27 +44,19 @@ func (Domain) Register(app *kit.App) {
 	app.SetClient(newClient)
 
 	kit.Handle(app, kit.OpMeta{
-		Name:    "joke",
-		Group:   "read",
-		Single:  true,
-		Summary: "Fetch a single joke from JokeAPI v2",
-		Args:    []kit.Arg{{Name: "category", Help: "joke category (Any, Misc, Programming, Dark, Pun, Spooky, Christmas)", Optional: true}},
-	}, jokeOp)
-
-	kit.Handle(app, kit.OpMeta{
-		Name:    "jokes",
+		Name:    "random",
 		Group:   "read",
 		List:    true,
-		Summary: "Fetch multiple jokes from JokeAPI v2",
-		Args:    []kit.Arg{{Name: "category", Help: "joke category (Any, Misc, Programming, Dark, Pun, Spooky, Christmas)", Optional: true}},
-	}, jokesOp)
+		Summary: "Get random jokes",
+	}, randomOp)
 
 	kit.Handle(app, kit.OpMeta{
-		Name:    "categories",
+		Name:    "type",
 		Group:   "read",
 		List:    true,
-		Summary: "List available joke categories",
-	}, categoriesOp)
+		Summary: "Get jokes by type",
+		Args:    []kit.Arg{{Name: "jokeType", Help: "joke type: general|programming|knock-knock|dark|pun|spooky|christmas"}},
+	}, typeOp)
 }
 
 // newClient builds the client from host-resolved config.
@@ -91,75 +79,50 @@ func newClient(_ context.Context, cfg kit.Config) (any, error) {
 
 // --- inputs ---
 
-type jokeInput struct {
-	Category       string  `kit:"arg,optional" help:"category: Any|Misc|Programming|Dark|Pun|Spooky|Christmas" default:"Any"`
-	Type           string  `kit:"flag" help:"joke type: single|twopart (default: both)"`
-	Safe           bool    `kit:"flag" help:"safe mode (no explicit content)"`
-	BlacklistFlags string  `kit:"flag" help:"comma-separated flags to exclude: nsfw,racist,sexist,explicit,religious,political"`
-	Lang           string  `kit:"flag" help:"language code" default:"en"`
-	Client         *Client `kit:"inject"`
-}
-
-type jokesInput struct {
-	Category string  `kit:"arg,optional" help:"category: Any|Misc|Programming|Dark|Pun|Spooky|Christmas" default:"Any"`
-	Amount   int     `kit:"flag,inherit" help:"number of jokes (1-10)" default:"3"`
-	Safe     bool    `kit:"flag" help:"safe mode"`
-	Client   *Client `kit:"inject"`
-}
-
-type categoriesInput struct {
+type randomInput struct {
+	Count  int     `kit:"flag" help:"number of jokes to fetch" default:"1"`
 	Client *Client `kit:"inject"`
+}
+
+type typeInput struct {
+	JokeType string  `kit:"arg" help:"joke type: general|programming|knock-knock|dark|pun|spooky|christmas"`
+	Count    int     `kit:"flag" help:"number of jokes to fetch (max 10)" default:"1"`
+	Client   *Client `kit:"inject"`
 }
 
 // --- handlers ---
 
-func jokeOp(ctx context.Context, in jokeInput, emit func(*Joke) error) error {
-	cat := in.Category
-	if cat == "" {
-		cat = "Any"
+func randomOp(ctx context.Context, in randomInput, emit func(Joke) error) error {
+	count := in.Count
+	if count <= 0 {
+		count = 1
 	}
-	lang := in.Lang
-	if lang == "" {
-		lang = "en"
-	}
-	item, err := in.Client.Joke(ctx, cat, in.Type, lang, in.Safe, in.BlacklistFlags)
+	jokes, err := in.Client.Random(ctx, count)
 	if err != nil {
 		return err
 	}
-	return emit(item)
-}
-
-func jokesOp(ctx context.Context, in jokesInput, emit func(Joke) error) error {
-	amount := in.Amount
-	if amount <= 0 {
-		amount = 3
-	}
-	if amount > 10 {
-		amount = 10
-	}
-	cat := in.Category
-	if cat == "" {
-		cat = "Any"
-	}
-	items, err := in.Client.Jokes(ctx, cat, in.Safe, amount)
-	if err != nil {
-		return err
-	}
-	for _, item := range items {
-		if err := emit(item); err != nil {
+	for _, j := range jokes {
+		if err := emit(j); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func categoriesOp(ctx context.Context, in categoriesInput, emit func(Category) error) error {
-	cats, err := in.Client.Categories(ctx)
+func typeOp(ctx context.Context, in typeInput, emit func(Joke) error) error {
+	count := in.Count
+	if count <= 0 {
+		count = 1
+	}
+	if count > 10 {
+		count = 10
+	}
+	jokes, err := in.Client.ByType(ctx, in.JokeType, count)
 	if err != nil {
 		return err
 	}
-	for _, cat := range cats {
-		if err := emit(cat); err != nil {
+	for _, j := range jokes {
+		if err := emit(j); err != nil {
 			return err
 		}
 	}
@@ -173,14 +136,14 @@ func (Domain) Classify(input string) (uriType, id string, err error) {
 	if input == "" {
 		return "", "", errs.Usage("empty jokeapi reference")
 	}
-	return "category", input, nil
+	return "type", input, nil
 }
 
 // Locate returns the live https URL for a (type, id).
 func (Domain) Locate(uriType, id string) (string, error) {
 	switch uriType {
-	case "category":
-		return fmt.Sprintf("https://v2.jokeapi.dev/joke/%s", id), nil
+	case "type":
+		return fmt.Sprintf("https://official-joke-api.appspot.com/jokes/%s/random", id), nil
 	default:
 		return "", errs.Usage("jokeapi has no resource type %q", uriType)
 	}
