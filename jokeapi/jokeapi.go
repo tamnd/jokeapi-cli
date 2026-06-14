@@ -34,7 +34,7 @@ func DefaultConfig() Config {
 	return Config{
 		BaseURL:   "https://v2.jokeapi.dev",
 		UserAgent: "jokeapi-cli/0.1.0 (github.com/tamnd/jokeapi-cli)",
-		Rate:      200 * time.Millisecond,
+		Rate:      500 * time.Millisecond,
 		Timeout:   15 * time.Second,
 		Retries:   3,
 	}
@@ -56,16 +56,48 @@ func NewClient(cfg Config) *Client {
 	}
 }
 
+// Joke fetches a single joke from the given category.
+// jType may be "single", "twopart", or "" for any type.
+// lang sets the language code (defaults to "en").
+// If safe is true, only family-safe jokes are returned.
+// blacklist is a comma-separated list of flags to exclude.
+func (c *Client) Joke(ctx context.Context, category, jType, lang string, safe bool, blacklist string) (*Joke, error) {
+	if category == "" {
+		category = "Any"
+	}
+	if lang == "" {
+		lang = "en"
+	}
+	u := fmt.Sprintf("%s/joke/%s?lang=%s", c.cfg.BaseURL, category, lang)
+	if jType != "" {
+		u += "&type=" + jType
+	}
+	if safe {
+		u += "&safe-mode"
+	}
+	if blacklist != "" {
+		u += "&blacklistFlags=" + strings.TrimSpace(blacklist)
+	}
+	body, err := c.get(ctx, u)
+	if err != nil {
+		return nil, err
+	}
+	var raw rawJoke
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("decode joke: %w", err)
+	}
+	return rawToJoke(raw), nil
+}
+
 // Jokes fetches count jokes from the given category.
 // If safe is true, only family-safe jokes are returned.
 // Category defaults to "Any" if empty.
-// blacklist is a comma-separated list of flags to exclude (nsfw, religious, political, racist, sexist, explicit).
-func (c *Client) Jokes(ctx context.Context, category string, safe bool, count int, blacklist string) ([]Joke, error) {
+func (c *Client) Jokes(ctx context.Context, category string, safe bool, count int) ([]Joke, error) {
 	if category == "" {
 		category = "Any"
 	}
 	if count <= 0 {
-		count = 1
+		count = 3
 	}
 	if count > 10 {
 		count = 10
@@ -73,9 +105,6 @@ func (c *Client) Jokes(ctx context.Context, category string, safe bool, count in
 	u := fmt.Sprintf("%s/joke/%s?amount=%d", c.cfg.BaseURL, category, count)
 	if safe {
 		u += "&safe-mode"
-	}
-	if blacklist != "" {
-		u += "&blacklistFlags=" + strings.TrimSpace(blacklist)
 	}
 	body, err := c.get(ctx, u)
 	if err != nil {
@@ -102,27 +131,14 @@ func (c *Client) Jokes(ctx context.Context, category string, safe bool, count in
 	}
 
 	jokes := make([]Joke, 0, len(raws))
-	for i, r := range raws {
-		j := Joke{
-			Rank:     i + 1,
-			ID:       r.ID,
-			Category: r.Category,
-			Type:     r.Type,
-			Safe:     r.Safe,
-		}
-		if r.Type == "twopart" {
-			j.Setup = r.Setup
-			j.Delivery = r.Delivery
-		} else {
-			j.Text = r.Joke
-		}
-		jokes = append(jokes, j)
+	for _, r := range raws {
+		jokes = append(jokes, *rawToJoke(r))
 	}
 	return jokes, nil
 }
 
 // Categories returns the list of available joke categories from the API.
-func (c *Client) Categories(ctx context.Context) ([]string, error) {
+func (c *Client) Categories(ctx context.Context) ([]Category, error) {
 	u := c.cfg.BaseURL + "/categories"
 	body, err := c.get(ctx, u)
 	if err != nil {
@@ -132,7 +148,35 @@ func (c *Client) Categories(ctx context.Context) ([]string, error) {
 	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil, fmt.Errorf("decode categories: %w", err)
 	}
-	return resp.Categories, nil
+	cats := make([]Category, len(resp.Categories))
+	for i, name := range resp.Categories {
+		cats[i] = Category{Name: name}
+	}
+	return cats, nil
+}
+
+// rawToJoke converts a wire rawJoke to the public Joke type.
+func rawToJoke(r rawJoke) *Joke {
+	j := &Joke{
+		ID:        r.ID,
+		Category:  r.Category,
+		Type:      r.Type,
+		Safe:      r.Safe,
+		Lang:      r.Lang,
+		NSFW:      r.Flags.NSFW,
+		Religious: r.Flags.Religious,
+		Political: r.Flags.Political,
+		Racist:    r.Flags.Racist,
+		Sexist:    r.Flags.Sexist,
+		Explicit:  r.Flags.Explicit,
+	}
+	if r.Type == "twopart" {
+		j.Setup = r.Setup
+		j.Delivery = r.Delivery
+	} else {
+		j.Joke = r.Joke
+	}
+	return j
 }
 
 func (c *Client) get(ctx context.Context, url string) ([]byte, error) {
