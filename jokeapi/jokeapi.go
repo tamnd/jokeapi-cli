@@ -1,5 +1,6 @@
 // Package jokeapi is the library behind the jokeapi command line:
-// the HTTP client, request shaping, and the typed data models for v2.jokeapi.dev.
+// the HTTP client, request shaping, and the typed data models for
+// official-joke-api.appspot.com.
 //
 // The Client sets a real User-Agent, paces requests so a busy session stays
 // polite, and retries the transient failures (429 and 5xx) that any public
@@ -12,13 +13,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
 	"sync"
 	"time"
 )
 
 // Host is the site this client talks to.
-const Host = "v2.jokeapi.dev"
+const Host = "official-joke-api.appspot.com"
 
 // Config holds all tunable parameters for the Client.
 type Config struct {
@@ -32,15 +32,15 @@ type Config struct {
 // DefaultConfig returns a Config with sensible defaults.
 func DefaultConfig() Config {
 	return Config{
-		BaseURL:   "https://v2.jokeapi.dev",
-		UserAgent: "jokeapi-cli/0.1.0 (github.com/tamnd/jokeapi-cli)",
-		Rate:      500 * time.Millisecond,
-		Timeout:   15 * time.Second,
+		BaseURL:   "https://official-joke-api.appspot.com",
+		UserAgent: "jokeapi-cli/0.1 (tamnd87@gmail.com)",
+		Rate:      200 * time.Millisecond,
+		Timeout:   10 * time.Second,
 		Retries:   3,
 	}
 }
 
-// Client talks to v2.jokeapi.dev over HTTP.
+// Client talks to official-joke-api.appspot.com over HTTP.
 type Client struct {
 	cfg  Config
 	http *http.Client
@@ -56,127 +56,82 @@ func NewClient(cfg Config) *Client {
 	}
 }
 
-// Joke fetches a single joke from the given category.
-// jType may be "single", "twopart", or "" for any type.
-// lang sets the language code (defaults to "en").
-// If safe is true, only family-safe jokes are returned.
-// blacklist is a comma-separated list of flags to exclude.
-func (c *Client) Joke(ctx context.Context, category, jType, lang string, safe bool, blacklist string) (*Joke, error) {
-	if category == "" {
-		category = "Any"
-	}
-	if lang == "" {
-		lang = "en"
-	}
-	u := fmt.Sprintf("%s/joke/%s?lang=%s", c.cfg.BaseURL, category, lang)
-	if jType != "" {
-		u += "&type=" + jType
-	}
-	if safe {
-		u += "&safe-mode"
-	}
-	if blacklist != "" {
-		u += "&blacklistFlags=" + strings.TrimSpace(blacklist)
-	}
-	body, err := c.get(ctx, u)
-	if err != nil {
-		return nil, err
-	}
-	var raw rawJoke
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return nil, fmt.Errorf("decode joke: %w", err)
-	}
-	return rawToJoke(raw), nil
+// wireJoke is the JSON shape returned by the API.
+type wireJoke struct {
+	ID        int    `json:"id"`
+	Type      string `json:"type"`
+	Setup     string `json:"setup"`
+	Punchline string `json:"punchline"`
 }
 
-// Jokes fetches count jokes from the given category.
-// If safe is true, only family-safe jokes are returned.
-// Category defaults to "Any" if empty.
-func (c *Client) Jokes(ctx context.Context, category string, safe bool, count int) ([]Joke, error) {
-	if category == "" {
-		category = "Any"
+func wireToJoke(w wireJoke) Joke {
+	return Joke{
+		ID:        w.ID,
+		Type:      w.Type,
+		Setup:     w.Setup,
+		Punchline: w.Punchline,
 	}
-	if count <= 0 {
-		count = 3
+}
+
+// Random fetches count random jokes. If count == 1, it uses /random_joke
+// (returns a single object). If count > 1, it uses /jokes/random/{count}
+// (returns an array).
+func (c *Client) Random(ctx context.Context, count int) ([]Joke, error) {
+	if count <= 1 {
+		body, err := c.get(ctx, c.cfg.BaseURL+"/random_joke")
+		if err != nil {
+			return nil, err
+		}
+		var w wireJoke
+		if err := json.Unmarshal(body, &w); err != nil {
+			return nil, fmt.Errorf("decode joke: %w", err)
+		}
+		return []Joke{wireToJoke(w)}, nil
 	}
-	if count > 10 {
-		count = 10
-	}
-	u := fmt.Sprintf("%s/joke/%s?amount=%d", c.cfg.BaseURL, category, count)
-	if safe {
-		u += "&safe-mode"
-	}
+
+	u := fmt.Sprintf("%s/jokes/random/%d", c.cfg.BaseURL, count)
 	body, err := c.get(ctx, u)
 	if err != nil {
 		return nil, err
 	}
-
-	// The API returns a flat object when amount=1, and a jokes array when amount>=2.
-	// We always try the array form first; fall back to single-joke form.
-	var resp jokesResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
+	var ws []wireJoke
+	if err := json.Unmarshal(body, &ws); err != nil {
 		return nil, fmt.Errorf("decode jokes: %w", err)
 	}
-
-	var raws []rawJoke
-	if len(resp.Jokes) > 0 {
-		raws = resp.Jokes
-	} else {
-		// Single joke: the whole body is a rawJoke.
-		var single rawJoke
-		if err := json.Unmarshal(body, &single); err != nil {
-			return nil, fmt.Errorf("decode single joke: %w", err)
-		}
-		raws = []rawJoke{single}
-	}
-
-	jokes := make([]Joke, 0, len(raws))
-	for _, r := range raws {
-		jokes = append(jokes, *rawToJoke(r))
+	jokes := make([]Joke, len(ws))
+	for i, w := range ws {
+		jokes[i] = wireToJoke(w)
 	}
 	return jokes, nil
 }
 
-// Categories returns the list of available joke categories from the API.
-func (c *Client) Categories(ctx context.Context) ([]Category, error) {
-	u := c.cfg.BaseURL + "/categories"
+// ByType fetches jokes of a given type. If count <= 1, it uses
+// /jokes/{type}/random (returns array of 1). If count > 1 (up to 10), it uses
+// /jokes/{type}/ten (returns up to 10 jokes, trimmed to count).
+func (c *Client) ByType(ctx context.Context, jokeType string, count int) ([]Joke, error) {
+	var u string
+	if count <= 1 {
+		u = fmt.Sprintf("%s/jokes/%s/random", c.cfg.BaseURL, jokeType)
+	} else {
+		u = fmt.Sprintf("%s/jokes/%s/ten", c.cfg.BaseURL, jokeType)
+	}
+
 	body, err := c.get(ctx, u)
 	if err != nil {
 		return nil, err
 	}
-	var resp categoriesResponse
-	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("decode categories: %w", err)
+	var ws []wireJoke
+	if err := json.Unmarshal(body, &ws); err != nil {
+		return nil, fmt.Errorf("decode jokes: %w", err)
 	}
-	cats := make([]Category, len(resp.Categories))
-	for i, name := range resp.Categories {
-		cats[i] = Category{Name: name}
+	if count > 0 && len(ws) > count {
+		ws = ws[:count]
 	}
-	return cats, nil
-}
-
-// rawToJoke converts a wire rawJoke to the public Joke type.
-func rawToJoke(r rawJoke) *Joke {
-	j := &Joke{
-		ID:        r.ID,
-		Category:  r.Category,
-		Type:      r.Type,
-		Safe:      r.Safe,
-		Lang:      r.Lang,
-		NSFW:      r.Flags.NSFW,
-		Religious: r.Flags.Religious,
-		Political: r.Flags.Political,
-		Racist:    r.Flags.Racist,
-		Sexist:    r.Flags.Sexist,
-		Explicit:  r.Flags.Explicit,
+	jokes := make([]Joke, len(ws))
+	for i, w := range ws {
+		jokes[i] = wireToJoke(w)
 	}
-	if r.Type == "twopart" {
-		j.Setup = r.Setup
-		j.Delivery = r.Delivery
-	} else {
-		j.Joke = r.Joke
-	}
-	return j
+	return jokes, nil
 }
 
 func (c *Client) get(ctx context.Context, url string) ([]byte, error) {

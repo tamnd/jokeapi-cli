@@ -22,9 +22,9 @@ func TestDomainInfo(t *testing.T) {
 
 func TestClassify(t *testing.T) {
 	cases := []struct{ in, typ, id string }{
-		{"Programming", "category", "Programming"},
-		{"dark", "category", "dark"},
-		{"Any", "category", "Any"},
+		{"programming", "type", "programming"},
+		{"general", "type", "general"},
+		{"knock-knock", "type", "knock-knock"},
 	}
 	for _, tc := range cases {
 		typ, id, err := Domain{}.Classify(tc.in)
@@ -43,18 +43,18 @@ func TestClassifyEmpty(t *testing.T) {
 }
 
 func TestLocate(t *testing.T) {
-	got, err := Domain{}.Locate("category", "Programming")
+	got, err := Domain{}.Locate("type", "programming")
 	if err != nil {
 		t.Fatalf("Locate: %v", err)
 	}
-	want := "https://v2.jokeapi.dev/joke/Programming"
+	want := "https://official-joke-api.appspot.com/jokes/programming/random"
 	if got != want {
 		t.Errorf("Locate = %q, want %q", got, want)
 	}
 }
 
-func TestLocateAny(t *testing.T) {
-	got, err := Domain{}.Locate("category", "Any")
+func TestLocateGeneral(t *testing.T) {
+	got, err := Domain{}.Locate("type", "general")
 	if err != nil {
 		t.Fatalf("Locate: %v", err)
 	}
@@ -70,91 +70,37 @@ func TestLocateUnknownType(t *testing.T) {
 	}
 }
 
-func TestRawToJokeSingle(t *testing.T) {
-	r := rawJoke{
-		ID:       42,
-		Category: "Misc",
-		Type:     "single",
-		Joke:     "Why did the chicken cross the road?",
-		Safe:     true,
-		Lang:     "en",
-		Flags: rawFlags{
-			NSFW:   false,
-			Racist: false,
-		},
+func TestWireToJoke(t *testing.T) {
+	w := wireJoke{
+		ID:        1,
+		Type:      "general",
+		Setup:     "What do you get hanging from Apple trees?",
+		Punchline: "Pears.",
 	}
-	j := rawToJoke(r)
-	if j.ID != 42 {
-		t.Errorf("ID = %d, want 42", j.ID)
+	j := wireToJoke(w)
+	if j.ID != 1 {
+		t.Errorf("ID = %d, want 1", j.ID)
 	}
-	if j.Joke != "Why did the chicken cross the road?" {
-		t.Errorf("Joke = %q, unexpected", j.Joke)
+	if j.Type != "general" {
+		t.Errorf("Type = %q, want general", j.Type)
 	}
-	if j.Setup != "" || j.Delivery != "" {
-		t.Errorf("Setup/Delivery should be empty for single type")
-	}
-	if j.Lang != "en" {
-		t.Errorf("Lang = %q, want en", j.Lang)
-	}
-}
-
-func TestRawToJokeTwoPart(t *testing.T) {
-	r := rawJoke{
-		ID:       9,
-		Category: "Programming",
-		Type:     "twopart",
-		Setup:    "How did the programmer die in the shower?",
-		Delivery: "He read the shampoo bottle instructions: Lather. Rinse. Repeat.",
-		Safe:     true,
-		Lang:     "en",
-		Flags: rawFlags{
-			NSFW:   false,
-			Sexist: false,
-		},
-	}
-	j := rawToJoke(r)
-	if j.Setup != "How did the programmer die in the shower?" {
+	if j.Setup != "What do you get hanging from Apple trees?" {
 		t.Errorf("Setup = %q, unexpected", j.Setup)
 	}
-	if j.Delivery != "He read the shampoo bottle instructions: Lather. Rinse. Repeat." {
-		t.Errorf("Delivery = %q, unexpected", j.Delivery)
-	}
-	if j.Joke != "" {
-		t.Errorf("Joke should be empty for twopart type, got %q", j.Joke)
+	if j.Punchline != "Pears." {
+		t.Errorf("Punchline = %q, want Pears.", j.Punchline)
 	}
 }
 
-func TestRawToJokeFlags(t *testing.T) {
-	r := rawJoke{
-		ID:   99,
-		Type: "single",
-		Joke: "test joke",
-		Flags: rawFlags{
-			NSFW:      true,
-			Religious: true,
-			Political: false,
-			Racist:    true,
-			Sexist:    false,
-			Explicit:  true,
-		},
+func TestDefaultConfig(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.BaseURL != "https://official-joke-api.appspot.com" {
+		t.Errorf("BaseURL = %q, want https://official-joke-api.appspot.com", cfg.BaseURL)
 	}
-	j := rawToJoke(r)
-	if !j.NSFW {
-		t.Error("NSFW should be true")
+	if cfg.UserAgent == "" {
+		t.Error("UserAgent is empty")
 	}
-	if !j.Religious {
-		t.Error("Religious should be true")
-	}
-	if j.Political {
-		t.Error("Political should be false")
-	}
-	if !j.Racist {
-		t.Error("Racist should be true")
-	}
-	if j.Sexist {
-		t.Error("Sexist should be false")
-	}
-	if !j.Explicit {
-		t.Error("Explicit should be true")
+	if cfg.Retries <= 0 {
+		t.Errorf("Retries = %d, want > 0", cfg.Retries)
 	}
 }
