@@ -65,12 +65,7 @@ type wireJoke struct {
 }
 
 func wireToJoke(w wireJoke) Joke {
-	return Joke{
-		ID:        w.ID,
-		Type:      w.Type,
-		Setup:     w.Setup,
-		Punchline: w.Punchline,
-	}
+	return Joke(w)
 }
 
 // Random fetches count random jokes. If count == 1, it uses /random_joke
